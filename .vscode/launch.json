@@ -1,0 +1,39 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Python: CLI",
+            "type": "python",
+            "request": "launch",
+            "module": "traffic_analyzer.cli",
+            "args": [
+                "${input:command}"
+            ],
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            },
+            "python": "${workspaceFolder}/venv/bin/python3"
+        },
+        {
+            "name": "Python: Current File",
+            "type": "python",
+            "request": "launch",
+            "program": "${file}",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            },
+            "python": "${workspaceFolder}/venv/bin/python3"
+        }
+    ],
+    "inputs": [
+        {
+            "id": "command",
+            "type": "promptString",
+            "description": "Enter the command (e.g., 'printdiff -t main -l feature-branch')",
+            "default": "printsource -p ./**/*.go"
+        }
+    ]
+}
