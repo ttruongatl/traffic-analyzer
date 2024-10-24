@@ -8,8 +8,8 @@ from tqdm import tqdm
 
 class TrafficCollector:
     # Constants for time management
-    DAYS_TO_COLLECT = 15
-    CHUNK_HOURS = 6
+    DAYS_TO_COLLECT = 2
+    CHUNK_HOURS = 3
     MAX_WORKERS = 16  # Limit parallel requests
 
     def __init__(self, cluster_url="https://akshuba.centralus.kusto.windows.net"):
@@ -73,7 +73,7 @@ class TrafficCollector:
             'other'
         )
         | extend LabelValue = iif(LabelKey != 'other', PodLabels[LabelKey], PodName)
-        | distinct LabelKey, LabelValue
+        | summarize PodLabelsKeys = make_set(PodLabels) by LabelKey, LabelValue
         """
         return query
 
