@@ -1,11 +1,10 @@
 import click
 import datetime
 from azure.kusto.data import KustoClient, KustoConnectionStringBuilder
-from azure.kusto.data.exceptions import KustoServiceError
-from azure.identity import DefaultAzureCredential
 from typing import List, Dict, Any
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from tqdm import tqdm
+
 
 class TrafficCollector:
     # Constants for time management
@@ -15,9 +14,9 @@ class TrafficCollector:
 
     def __init__(self, cluster_url="https://akshuba.centralus.kusto.windows.net"):
         self.cluster_url = cluster_url
-        kcsb = KustoConnectionStringBuilder.with_az_cli_authentication(cluster_url)
+        kcsb = KustoConnectionStringBuilder.with_az_cli_authentication(
+            cluster_url)
         self.client = KustoClient(kcsb)
-
 
     def get_time_chunks(self) -> List[tuple]:
         """Generate time chunks for the last 30 days in 6-hour intervals"""
@@ -42,7 +41,7 @@ class TrafficCollector:
         let endTime = datetime('{end_time.isoformat()}');
         let startTime = datetime('{start_time.isoformat()}');
         let targetComponent = '{component}';
-        
+
         // Extract traffic data for the target component
         let msiConnectorTraffic =
         cluster('{self.cluster_url}').database('AKSprod').IncomingRequestTrace
@@ -51,13 +50,13 @@ class TrafficCollector:
         | extend clientIP = tostring(split(clientRemoteAddr, ':')[0])
         | project clientIP, UnderlayName, TIMESTAMP
         | summarize by clientIP, UnderlayName, bin(TIMESTAMP, 1h);
-        
+
         // Get the latest Pod information
         let podInfo =
         cluster('{self.cluster_url}').database('AKSinfra').ProcessInfo
         | where TIMESTAMP between (startTime .. endTime)
         | summarize arg_max(TIMESTAMP, PodLabels, PodName, PodNamespace) by PodIP, UnderlayName;
-        
+
         // Join traffic data with Pod information
         msiConnectorTraffic
         | join kind=inner hint.strategy=broadcast (podInfo) on UnderlayName, $left.clientIP == $right.PodIP
@@ -89,23 +88,24 @@ class TrafficCollector:
             click.echo(f"Finished processing chunk {start_time} - {end_time}")
             return response.primary_results[0] if response.primary_results[0] else []
         except Exception as e:
-            click.echo(f"Error processing chunk {start_time} - {end_time}: {str(e)}", err=True)
+            click.echo(
+                f"Error processing chunk {start_time} - {end_time}: {str(e)}", err=True)
             return []
 
     def merge_results(self, all_results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Merge results and ensure LabelKey-LabelValue pairs are unique"""
         # Create a dictionary to track unique pairs
         unique_pairs = {}
-        
+
         for result in all_results:
             key = result['LabelKey']
             value = result['LabelValue']
             pair_key = (key, value)
-            
+
             # Only add if we haven't seen this exact key-value pair before
             if pair_key not in unique_pairs:
                 unique_pairs[pair_key] = True
-        
+
         # Convert to final format with row numbers
         merged_results = [
             {
@@ -115,7 +115,7 @@ class TrafficCollector:
             }
             for idx, (key, value) in enumerate(sorted(unique_pairs.keys()))
         ]
-        
+
         return merged_results
 
     def collect_traffic(self, component: str) -> List[Dict[str, Any]]:
@@ -142,7 +142,8 @@ class TrafficCollector:
                                 # Each chunk result is already unique from the Kusto query
                                 all_results.extend(chunk_results)
                         except Exception as e:
-                            click.echo(f"Chunk {chunk} generated an exception: {str(e)}", err=True)
+                            click.echo(
+                                f"Chunk {chunk} generated an exception: {str(e)}", err=True)
                         pbar.update(1)
 
             if all_results:
