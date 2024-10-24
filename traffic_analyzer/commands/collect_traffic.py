@@ -9,9 +9,9 @@ from tqdm import tqdm
 
 class TrafficCollector:
     # Constants for time management
-    DAYS_TO_COLLECT = 1
+    DAYS_TO_COLLECT = 15
     CHUNK_HOURS = 6
-    MAX_WORKERS = 2  # Limit parallel requests
+    MAX_WORKERS = 16  # Limit parallel requests
 
     def __init__(self, cluster_url="https://akshuba.centralus.kusto.windows.net"):
         self.cluster_url = cluster_url
