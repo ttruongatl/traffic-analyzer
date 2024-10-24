@@ -4,19 +4,20 @@ from azure.kusto.data import KustoClient, KustoConnectionStringBuilder
 from azure.kusto.data.exceptions import KustoServiceError
 from azure.identity import DefaultAzureCredential
 from typing import List, Dict, Any
-
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from tqdm import tqdm
 
 class TrafficCollector:
     # Constants for time management
     DAYS_TO_COLLECT = 1
     CHUNK_HOURS = 6
+    MAX_WORKERS = 2  # Limit parallel requests
 
     def __init__(self, cluster_url="https://akshuba.centralus.kusto.windows.net"):
         self.cluster_url = cluster_url
-        self.credential = DefaultAzureCredential()
-        self.kcsb = KustoConnectionStringBuilder.with_aad_managed_service_identity_authentication(
-            cluster_url)
-        self.client = KustoClient(self.kcsb)
+        kcsb = KustoConnectionStringBuilder.with_az_cli_authentication(cluster_url)
+        self.client = KustoClient(kcsb)
+
 
     def get_time_chunks(self) -> List[tuple]:
         """Generate time chunks for the last 30 days in 6-hour intervals"""
@@ -63,6 +64,7 @@ class TrafficCollector:
         | where PodNamespace matches regex "^[0-9]"
         | extend PodLabels = todynamic(PodLabels)
         | extend LabelKey = case(
+            isnotnull(PodLabels['kube-egress-gateway-control-plane']), 'kube-egress-gateway-control-plane',
             isnotnull(PodLabels['rsName']), 'rsName',
             isnotnull(PodLabels['control-plane']), 'control-plane',
             isnotnull(PodLabels['app.kubernetes.io/name']), 'app.kubernetes.io/name',
@@ -76,47 +78,78 @@ class TrafficCollector:
         """
         return query
 
-    def merge_results(self, all_results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """Merge and deduplicate results from all chunks"""
-        # Convert list of results to a set of tuples for deduplication
-        unique_results = set()
-        for result in all_results:
-            unique_results.add((result['LabelKey'], result['LabelValue']))
+    def process_chunk(self, component: str, time_chunk: tuple) -> List[Dict[str, Any]]:
+        """Process a single time chunk and return results"""
+        start_time, end_time = time_chunk
+        try:
+            query = self.build_query(component, start_time, end_time)
+            click.echo(f"Start processing chunk {start_time} - {end_time}")
+            click.echo(f"Query: {query}")
+            response = self.client.execute("AKSprod", query)
+            click.echo(f"Finished processing chunk {start_time} - {end_time}")
+            return response.primary_results[0] if response.primary_results[0] else []
+        except Exception as e:
+            click.echo(f"Error processing chunk {start_time} - {end_time}: {str(e)}", err=True)
+            return []
 
-        # Convert back to list of dicts with row numbers
+    def merge_results(self, all_results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Merge results and ensure LabelKey-LabelValue pairs are unique"""
+        # Create a dictionary to track unique pairs
+        unique_pairs = {}
+        
+        for result in all_results:
+            key = result['LabelKey']
+            value = result['LabelValue']
+            pair_key = (key, value)
+            
+            # Only add if we haven't seen this exact key-value pair before
+            if pair_key not in unique_pairs:
+                unique_pairs[pair_key] = True
+        
+        # Convert to final format with row numbers
         merged_results = [
             {
                 'RowNum': idx + 1,
                 'LabelKey': key,
                 'LabelValue': value
             }
-            for idx, (key, value) in enumerate(sorted(unique_results))
+            for idx, (key, value) in enumerate(sorted(unique_pairs.keys()))
         ]
-
+        
         return merged_results
 
     def collect_traffic(self, component: str) -> List[Dict[str, Any]]:
-        """Collect traffic data for all time chunks and merge results"""
+        """Collect traffic data for all time chunks in parallel and merge results"""
         try:
-            all_results = []
             chunks = self.get_time_chunks()
-            total_chunks = len(chunks)
+            all_results = []
 
-            with click.progressbar(chunks, label='Collecting traffic data',
-                                   length=total_chunks) as chunks_bar:
-                for start_time, end_time in chunks_bar:
-                    query = self.build_query(component, start_time, end_time)
-                    response = self.client.execute("AKSprod", query)
-                    if response.primary_results[0]:
-                        all_results.extend(response.primary_results[0])
+            # Using ThreadPoolExecutor for parallel processing
+            with ThreadPoolExecutor(max_workers=self.MAX_WORKERS) as executor:
+                # Submit all tasks
+                future_to_chunk = {
+                    executor.submit(self.process_chunk, component, chunk): chunk
+                    for chunk in chunks
+                }
+
+                # Process completed tasks with progress bar
+                with tqdm(total=len(chunks), desc="Processing chunks") as pbar:
+                    for future in as_completed(future_to_chunk):
+                        chunk = future_to_chunk[future]
+                        try:
+                            chunk_results = future.result()
+                            if chunk_results:
+                                # Each chunk result is already unique from the Kusto query
+                                all_results.extend(chunk_results)
+                        except Exception as e:
+                            click.echo(f"Chunk {chunk} generated an exception: {str(e)}", err=True)
+                        pbar.update(1)
 
             if all_results:
+                # Final deduplication happens here
                 return self.merge_results(all_results)
             return None
 
-        except KustoServiceError as e:
-            click.echo(f"Error querying Kusto: {str(e)}", err=True)
-            return None
         except Exception as e:
             click.echo(f"Unexpected error: {str(e)}", err=True)
             return None

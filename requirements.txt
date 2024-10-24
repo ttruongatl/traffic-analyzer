@@ -9,3 +9,5 @@ wheel==0.44.0
 setuptools==75.1.0
 azure-kusto-data==4.6.1
 azure-kusto-ingest==4.6.1
+azure.identity==1.19.0
+tqdm==4.66.5

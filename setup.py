@@ -9,8 +9,11 @@ setup(
         'Click',
         'pathspec',
         'pytest',
-        "azure-kusto-data",
-        'azure-kusto-ingest'
+        'azure-kusto-data',
+        'azure-kusto-ingest',
+        'azure.identity',
+        'tqdm'
+
     ],
     entry_points='''
         [console_scripts]
