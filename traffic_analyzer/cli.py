@@ -14,51 +14,28 @@ def cli():
 
 @cli.command()
 @click.option('--component', '-c', required=True, help='Component to collect traffic data for')
-@click.option('--output', '-o', type=click.Path(), help='Output file path (optional)')
 @click.option('--days', default=2, help='Number of days to collect data for')
 @click.option('--chunk-hours', default=1, help='Number of hours per chunk')
 @click.option('--max-workers', default=16, help='Maximum number of parallel workers')
-def collect(component, output, days, chunk_hours, max_workers):
-    """Collect traffic data for a specific component."""
+@click.option('--force', is_flag=True, help='Force replace existing data')
+def collect(component: str, days: int, chunk_hours: int, max_workers: int, force: bool):
+    """Collect traffic data and store in PostgreSQL."""
     click.echo(f"Collecting traffic data for {component}...")
     
-    collector = TrafficCollector(days_to_collect=days, chunk_hours=chunk_hours, max_workers=max_workers)
-    result = collector.collect_traffic(component)
-    
-    if result.get('results'):
-        # Print results
-        for row in result['results']:
-            label_key = row['LabelKey']
-            label_value = row['LabelValue']
-            click.echo(f"{row['RowNum']}: {label_key} -> {label_value}")
+    try:
+        collector = TrafficCollector(
+            days_to_collect=days,
+            chunk_hours=chunk_hours,
+            max_workers=max_workers
+        )
         
-        if output:
-            # Save full results including execution info to file
-            import json
-            with open(output, 'w') as f:
-                json.dump(result, f, indent=2)
-            click.echo(f"Results saved to {output}")
-    else:
-        click.echo("No results found or an error occurred.")
+        collector.collect_and_store(component, force_replace=force)
         
-    # Always show execution info
-    execution_info = result.get('execution_info', {})
-    if execution_info:
-        click.echo("\nExecution Summary:")
-        click.echo("-" * 40)
-        click.echo(f"Total Chunks: {execution_info.get('total_chunks', 0)}")
-        click.echo(f"Successful Chunks: {execution_info.get('successful_chunks', 0)}")
-        click.echo(f"Failed Chunks: {execution_info.get('failed_chunks', 0)}")
-        click.echo(f"Total Results: {execution_info.get('total_results', 0)}")
+        click.echo("\nCollection completed successfully!")
         
-        if execution_info.get('errors'):
-            click.echo("\nError Summary:")
-            click.echo("-" * 40)
-            for i, error in enumerate(execution_info['errors'], 1):
-                click.echo(f"\nError {i}:")
-                click.echo(f"Type: {error.get('error_type', 'Unknown')}")
-                click.echo(f"Message: {error.get('error_message', 'No message')}")
-                click.echo(f"Chunk: {error.get('chunk_info', {})}")
+    except Exception as e:
+        click.echo(f"\nError during collection: {str(e)}", err=True)
+        raise click.Abort()
 
 
 @cli.command(name='test-kusto')

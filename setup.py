@@ -12,8 +12,8 @@ setup(
         'azure-kusto-data',
         'azure-kusto-ingest',
         'azure.identity',
-        'tqdm'
-
+        'tqdm',
+        'psycopg2'
     ],
     entry_points='''
         [console_scripts]
