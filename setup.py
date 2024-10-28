@@ -14,7 +14,8 @@ setup(
         'azure.identity',
         'tqdm',
         'psycopg2',
-        'pyyaml'
+        'pyyaml',
+        'ruamel.yaml'
     ],
     entry_points='''
         [console_scripts]

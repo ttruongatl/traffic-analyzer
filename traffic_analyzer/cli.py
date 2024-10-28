@@ -6,6 +6,14 @@ from .commands.kusto_tester import KustoTester
 import datetime
 from datetime import datetime, time, timedelta
 import yaml
+import ruamel.yaml
+from ruamel.yaml.comments import CommentedMap, CommentedSeq
+
+import psycopg2
+from psycopg2.extras import Json
+from typing import Dict, Any, List
+import traceback
+from dataclasses import dataclass
 
 @click.group()
 @click.version_option()
@@ -49,20 +57,21 @@ def generate_np(component: str, days: int, namespace: str, output: str):
     # Calculate date range
     end_date = datetime.utcnow().date() - timedelta(days=1)  # Exclude today
     start_date = end_date - timedelta(days=days - 1)
-
+    
     pg_manager = PostgresManager()
     results = pg_manager.get_results_for_date_range(start_date, end_date, component)
     if not results:
         click.echo(f"No data found for component '{component}' in the last {days} days")
         return
-
-    ingress_rules_set = set()
-
-    for record in results:
-        is_ccp = record['isCCP']
+    
+    # Separate ingress rules into non-CCP and CCP groups
+    ingress_rule_entries = []
+    
+    for idx, record in enumerate(results, start=1):
+        is_ccp = record.get('isCCP', 'False')
         label_key = record['LabelKey']
         label_value = record['LabelValue']
-        pod_namespace = record['PodNamespace']
+        pod_namespace = record.get('PodNamespace', 'default')
         
         if is_ccp == 'True':
             # CCP component
@@ -73,56 +82,114 @@ def generate_np(component: str, days: int, namespace: str, output: str):
         
         pod_selector = {'matchLabels': {label_key: label_value}}
         
-        # Represent the ingress rule as a tuple to be hashable
-        ingress_rule_tuple = (
-            frozenset(namespace_selector['matchLabels'].items()),
-            frozenset(pod_selector['matchLabels'].items())
-        )
-        
-        ingress_rules_set.add(ingress_rule_tuple)
-
-    # Now, create the ingress rules list
-    ingress_rules = []
-    for ns_labels_items, pod_labels_items in ingress_rules_set:
-        namespace_selector = {'matchLabels': dict(ns_labels_items)}
-        pod_selector = {'matchLabels': dict(pod_labels_items)}
-        ingress_rule = {
-            'from': [
-                {
-                    'namespaceSelector': namespace_selector,
-                    'podSelector': pod_selector
-                }
-            ],
-            'ports': [
-                {'protocol': 'TCP', 'port': 8081},
-                {'protocol': 'TCP', 'port': 9102}
-            ]
+        ingress_rule_entry = {
+            'is_ccp': is_ccp,
+            'namespace': pod_namespace,
+            'label_key': label_key,
+            'label_value': label_value,
+            'namespace_selector': namespace_selector,
+            'pod_selector': pod_selector,
+            'index': idx  # Row number index
         }
-        ingress_rules.append(ingress_rule)
-
-    # Assemble the NetworkPolicy
-    network_policy = {
+        
+        ingress_rule_entries.append(ingress_rule_entry)
+    
+    # Remove duplicates
+    ingress_rule_entries_unique = {(
+        entry['is_ccp'],
+        tuple(entry['namespace_selector']['matchLabels'].items()),
+        tuple(entry['pod_selector']['matchLabels'].items())
+    ): entry for entry in ingress_rule_entries}.values()
+    
+    # Separate and sort the entries
+    non_ccp_entries = [entry for entry in ingress_rule_entries_unique if entry['is_ccp'] == 'False']
+    ccp_entries = [entry for entry in ingress_rule_entries_unique if entry['is_ccp'] == 'True']
+    
+    # Sort non-CCP entries by namespace name alphabetically
+    non_ccp_entries.sort(key=lambda x: x['namespace'])
+    
+    # Sort CCP entries by label key
+    ccp_entries.sort(key=lambda x: x['label_key'])
+    
+    # Initialize ruamel.yaml YAML object
+    yaml = ruamel.yaml.YAML()
+    yaml.preserve_quotes = True
+    yaml.indent(mapping=2, sequence=4, offset=2)
+    
+    # Prepare the NetworkPolicy data structure
+    network_policy = CommentedMap({
         'apiVersion': 'networking.k8s.io/v1',
         'kind': 'NetworkPolicy',
-        'metadata': {
+        'metadata': CommentedMap({
             'name': 'allow-msi-connector-ingress',
             'namespace': namespace
-        },
-        'spec': {
-            'podSelector': {
-                'matchLabels': {
+        }),
+        'spec': CommentedMap({
+            'podSelector': CommentedMap({
+                'matchLabels': CommentedMap({
                     'app': 'msi-connector'
-                }
-            },
+                })
+            }),
             'policyTypes': ['Ingress'],
-            'ingress': ingress_rules
-        }
-    }
-
+            'ingress': CommentedSeq()
+        })
+    })
+    
+    ingress_rules = network_policy['spec']['ingress']
+    idx_counter = 1  # To keep track of the row numbers
+    
+    # Add non-CCP ingress rules
+    if non_ccp_entries:
+        # Add dividing comment before the first non-CCP ingress rule
+        ingress_rules.yaml_set_start_comment('# Non-CCP Ingress Rules', indent=0)
+        
+        for entry in non_ccp_entries:
+            comment = f"{idx_counter}. Allow ingress traffic from {entry['namespace']} ({entry['label_value']})"
+            ingress_rule = CommentedMap({
+                'from': [
+                    {
+                        'namespaceSelector': CommentedMap(entry['namespace_selector']),
+                        'podSelector': CommentedMap(entry['pod_selector'])
+                    }
+                ],
+                'ports': [
+                    CommentedMap({'protocol': 'TCP', 'port': 8081}),
+                    CommentedMap({'protocol': 'TCP', 'port': 9102})
+                ]
+            })
+            ingress_rule.yaml_set_start_comment(comment, indent=0)
+            ingress_rules.append(ingress_rule)
+            idx_counter += 1
+    
+    # Add CCP ingress rules
+    if ccp_entries:
+        # Get the index where CCP entries start
+        ccp_start_index = len(ingress_rules)
+        # Add dividing comment before the first CCP ingress rule
+        ingress_rules.yaml_set_comment_before_after_key(ccp_start_index, before='\n# CCP Ingress Rules', indent=0)
+        
+        for entry in ccp_entries:
+            comment = f"{idx_counter}. Allow ingress traffic from {entry['label_value']} ({entry['label_value']})"
+            ingress_rule = CommentedMap({
+                'from': [
+                    {
+                        'namespaceSelector': CommentedMap(entry['namespace_selector']),
+                        'podSelector': CommentedMap(entry['pod_selector'])
+                    }
+                ],
+                'ports': [
+                    CommentedMap({'protocol': 'TCP', 'port': 8081}),
+                    CommentedMap({'protocol': 'TCP', 'port': 9102})
+                ]
+            })
+            ingress_rule.yaml_set_start_comment(comment, indent=0)
+            ingress_rules.append(ingress_rule)
+            idx_counter += 1
+    
     # Write to YAML file
     with open(output, 'w') as f:
-        yaml.dump(network_policy, f, default_flow_style=False)
-
+        yaml.dump(network_policy, f)
+    
     click.echo(f"NetworkPolicy YAML has been written to {output}")
 
 @cli.command(name='test-kusto')
