@@ -102,8 +102,8 @@ class TrafficCollector:
 
     def get_day_chunks(self) -> List[DayChunk]:
         """Generate time chunks aligned to full days."""
-        end_time = datetime.utcnow()
-        start_time = end_time - timedelta(days=self.DAYS_TO_COLLECT)
+        end_time = (datetime.utcnow() - timedelta(days=1)).replace(hour=23, minute=59, second=59, microsecond=999)
+        start_time = end_time - timedelta(days=self.DAYS_TO_COLLECT - 1)
         
         # Align to full days (midnight to midnight UTC)
         start_date = start_time.date()
@@ -166,38 +166,53 @@ class TrafficCollector:
         let startTime = datetime('{start_time.isoformat()}');
         let targetComponent = '{component}';
 
-        // Extract traffic data for the target component
-        let msiConnectorTraffic =
-        cluster('{self.cluster_url}').database('AKSprod').IncomingRequestTrace
-        | where TIMESTAMP between (startTime .. endTime)
-        | where namespace == targetComponent
-        | extend clientIP = tostring(split(clientRemoteAddr, ':')[0])
-        | project clientIP, UnderlayName
-        | distinct clientIP, UnderlayName;
+        // Extract traffic data for the target component and get distinct client IPs
+        let msiConnectorTraffic = 
+            cluster('{self.cluster_url}').database('AKSprod').IncomingRequestTrace
+            | where TIMESTAMP between (startTime .. endTime)
+            | where namespace == targetComponent
+            | extend clientIP = tostring(split(clientRemoteAddr, ':')[0]) // Extract client IP
+            | distinct clientIP, UnderlayName;
 
-        // Get the latest Pod information
-        let podInfo =
-        cluster('{self.cluster_url}').database('AKSinfra').ProcessInfo
-        | where TIMESTAMP between (startTime .. endTime)
-        | summarize arg_max(TIMESTAMP, PodLabels, PodName, PodNamespace) by PodIP, UnderlayName;
+        // Get the latest Pod information for the relevant client IPs
+        let podInfo = 
+            cluster('{self.cluster_url}').database('AKSinfra').ProcessInfo
+            | where TIMESTAMP between (startTime .. endTime)
+            | where PodIP in (msiConnectorTraffic | distinct clientIP)
+            | summarize arg_max(TIMESTAMP, PodLabels, PodName, PodNamespace) by PodIP, UnderlayName
+            | extend isCCP = tostring(PodNamespace matches regex "^[0-9]");
 
         // Join traffic data with Pod information
         msiConnectorTraffic
-        | join kind=inner hint.strategy=broadcast (podInfo) on UnderlayName, $left.clientIP == $right.PodIP
-        | where PodNamespace matches regex "^[0-9]"
-        | extend PodLabels = todynamic(PodLabels)
+        | join kind=inner (
+            podInfo
+        ) on UnderlayName, $left.clientIP == $right.PodIP
+        | extend parsedPodLabels = todynamic(PodLabels) // Parse PodLabels as JSON
+        // Determine which label to use based on isCCP flag
         | extend LabelKey = case(
-            isnotnull(PodLabels['kube-egress-gateway-control-plane']), 'kube-egress-gateway-control-plane',
-            isnotnull(PodLabels['rsName']), 'rsName',
-            isnotnull(PodLabels['control-plane']), 'control-plane',
-            isnotnull(PodLabels['app.kubernetes.io/name']), 'app.kubernetes.io/name',
-            isnotnull(PodLabels['overlay-app']), 'overlay-app',
-            isnotnull(PodLabels['k8s-app']), 'k8s-app',
-            isnotnull(PodLabels.app), 'app',
+            isCCP == "True" and isnotnull(parsedPodLabels['kube-egress-gateway-control-plane']), 'kube-egress-gateway-control-plane',
+            isCCP == "True" and isnotnull(parsedPodLabels['rsName']), 'rsName',
+            isCCP == "True" and isnotnull(parsedPodLabels['control-plane']), 'control-plane',
+            isCCP == "True" and isnotnull(parsedPodLabels['app.kubernetes.io/name']), 'app.kubernetes.io/name',
+            isCCP == "True" and isnotnull(parsedPodLabels['overlay-app']), 'overlay-app',
+            isCCP == "True" and isnotnull(parsedPodLabels['k8s-app']), 'k8s-app',
+            isCCP == "True" and isnotnull(parsedPodLabels.app), 'app',
+            isCCP == "False" and isnotnull(parsedPodLabels['name']), 'name',
+            isCCP == "False" and isnotnull(parsedPodLabels['control-plane']), 'control-plane',
+            isCCP == "False" and isnotnull(parsedPodLabels['app.kubernetes.io/name']), 'app.kubernetes.io/name',
+            isCCP == "False" and isnotnull(parsedPodLabels['adxmon']), 'adxmon',
+            isCCP == "False" and isnotnull(parsedPodLabels['k8s-app']), 'k8s-app',
+            isCCP == "False" and isnotnull(parsedPodLabels.app), 'app',
             'other'
         )
-        | extend LabelValue = iif(LabelKey != 'other', PodLabels[LabelKey], PodName)
-        | distinct LabelKey, LabelValue
+        // Extract the LabelValue based on LabelKey
+        | extend LabelValue = iif(LabelKey != 'other', parsedPodLabels[LabelKey], PodName)
+        // Assign "CCP Namespace" to PodNamespace if isCCP is True
+        | extend PodNamespace = iif(isCCP == "True", "CCP Namespace", PodNamespace)
+        // Retrieve distinct combinations of LabelKey and LabelValue
+        | summarize by isCCP, LabelKey, LabelValue, PodNamespace
+        | order by LabelKey
+        | extend RowNum = row_number()
         """
         return query
 
@@ -218,8 +233,9 @@ class TrafficCollector:
         
         try:
             query = self.build_query(component, start_time, end_time)
+            print(f"query: {query}")
             response = self.execute_query_with_retries("AKSprod", query)
-            results = response.primary_results[0] if response.primary_results[0] else []
+            results = [row.to_dict() for row in response.primary_results[0]]
             
             return {
                 'success': True,
@@ -244,7 +260,9 @@ class TrafficCollector:
         for result in all_results:
             key = result['LabelKey']
             value = result['LabelValue']
-            pair_key = (key, value)
+            is_ccp = result['isCCP']
+            pod_namespace = result['PodNamespace']
+            pair_key = (key, value, is_ccp, pod_namespace)
             if pair_key not in unique_pairs:
                 unique_pairs[pair_key] = True
                 
@@ -252,9 +270,11 @@ class TrafficCollector:
             {
                 'RowNum': idx + 1,
                 'LabelKey': key,
-                'LabelValue': value
+                'LabelValue': value,
+                'isCCP': is_ccp,
+                'PodNamespace': pod_namespace
             }
-            for idx, (key, value) in enumerate(sorted(unique_pairs.keys()))
+            for idx, (key, value, is_ccp, pod_namespace) in enumerate(sorted(unique_pairs.keys()))
         ]
         return merged_results
 
@@ -344,7 +364,6 @@ class TrafficCollector:
             
             # Process the day
             day_results = self.process_day(day_chunk, component)
-            
             if day_results:
                 # Store in PostgreSQL
                 self.pg_manager.store_daily_results(
