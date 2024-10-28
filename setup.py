@@ -13,7 +13,8 @@ setup(
         'azure-kusto-ingest',
         'azure.identity',
         'tqdm',
-        'psycopg2'
+        'psycopg2',
+        'pyyaml'
     ],
     entry_points='''
         [console_scripts]

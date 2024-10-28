@@ -50,7 +50,7 @@ class PostgresManager:
         with self.get_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute("""
-                    CREATE TABLE IF NOT EXISTS msi_connector (
+                    CREATE TABLE IF NOT EXISTS component_dependency (
                         dateonly DATE PRIMARY KEY,
                         component VARCHAR(255) NOT NULL,
                         results JSONB NOT NULL,
@@ -69,7 +69,7 @@ class PostgresManager:
         with self.get_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute("""
-                    SELECT 1 FROM msi_connector 
+                    SELECT 1 FROM component_dependency 
                     WHERE dateonly = %s AND component = %s
                 """, (date, component))
                 return cur.fetchone() is not None
@@ -79,7 +79,7 @@ class PostgresManager:
         with self.get_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute("""
-                    INSERT INTO msi_connector (dateonly, component, results, execution_info)
+                    INSERT INTO component_dependency (dateonly, component, results, execution_info)
                     VALUES (%s, %s, %s, %s)
                     ON CONFLICT (dateonly) 
                     DO UPDATE SET
@@ -88,6 +88,20 @@ class PostgresManager:
                         updated_at = CURRENT_TIMESTAMP
                 """, (date, component, Json(results), Json(execution_info)))
                 conn.commit()
+    
+    def get_results_for_date_range(self, start_date: datetime.date, end_date: datetime.date, component: str) -> List[Dict]:
+        """Retrieve results for a date range and component."""
+        with self.get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT results FROM component_dependency
+                    WHERE dateonly BETWEEN %s AND %s AND component = %s
+                """, (start_date, end_date, component))
+                rows = cur.fetchall()
+                results = []
+                for row in rows:
+                    results.extend(row[0])  # 'results' column contains the data
+                return results
 
 class TrafficCollector:
     def __init__(self, cluster_url="https://akshuba.centralus.kusto.windows.net",
@@ -233,7 +247,6 @@ class TrafficCollector:
         
         try:
             query = self.build_query(component, start_time, end_time)
-            print(f"query: {query}")
             response = self.execute_query_with_retries("AKSprod", query)
             results = [row.to_dict() for row in response.primary_results[0]]
             
@@ -264,17 +277,18 @@ class TrafficCollector:
             pod_namespace = result['PodNamespace']
             pair_key = (key, value, is_ccp, pod_namespace)
             if pair_key not in unique_pairs:
-                unique_pairs[pair_key] = True
-                
+                unique_pairs[pair_key] = {
+                    'LabelKey': key,
+                    'LabelValue': value,
+                    'isCCP': is_ccp,
+                    'PodNamespace': pod_namespace
+                }
         merged_results = [
             {
                 'RowNum': idx + 1,
-                'LabelKey': key,
-                'LabelValue': value,
-                'isCCP': is_ccp,
-                'PodNamespace': pod_namespace
+                **unique_pairs[pair_key]
             }
-            for idx, (key, value, is_ccp, pod_namespace) in enumerate(sorted(unique_pairs.keys()))
+            for idx, pair_key in enumerate(sorted(unique_pairs.keys()))
         ]
         return merged_results
 
