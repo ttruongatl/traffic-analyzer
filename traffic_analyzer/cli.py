@@ -25,17 +25,17 @@ def cli():
 @cli.command()
 @click.option('--component', '-c', required=True, help='Component to collect traffic data for')
 @click.option('--days', default=2, help='Number of days to collect data for')
-@click.option('--chunk-hours', default=1, help='Number of hours per chunk')
+@click.option('--chunk-minutes', default=15, help='Number of minutes per chunk')
 @click.option('--max-workers', default=16, help='Maximum number of parallel workers')
 @click.option('--force', is_flag=True, help='Force replace existing data')
-def collect(component: str, days: int, chunk_hours: int, max_workers: int, force: bool):
+def collect(component: str, days: int, chunk_minutes: int, max_workers: int, force: bool):
     """Collect traffic data and store in PostgreSQL."""
     click.echo(f"Collecting traffic data for {component}...")
     
     try:
         collector = TrafficCollector(
             days_to_collect=days,
-            chunk_hours=chunk_hours,
+            chunk_minutes=chunk_minutes,
             max_workers=max_workers
         )
         
