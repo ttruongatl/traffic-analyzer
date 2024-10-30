@@ -1,8 +1,12 @@
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: allow-msi-connector-ingress
+  name: allow-(V_MSI_CONNECTOR_NAMESPACE)-ingress
   namespace: (V_MSI_CONNECTOR_NAMESPACE)
+  annotations:
+    description: Auto-generated NetworkPolicy based on observed traffic patterns
+    generated-at: "2024-10-29T19:55:27.127588"
+    data-period: Records analyzed from 2024-10-28 to 2024-10-28
 spec:
   podSelector:
     matchLabels:
@@ -10,8 +14,8 @@ spec:
   policyTypes:
     - Ingress
   ingress:
-# Non-CCP Ingress Rules
-# 1. Allow ingress traffic from aks-operator-system (controller-manager)
+    # Non-CCP Ingress Rules
+    # 1. Allow ingress traffic from aks-operator-system (controller-manager) - Seen 1 days between 2024-10-28 and 2024-10-28
     - from:
         - namespaceSelector:
             matchLabels:
@@ -24,20 +28,7 @@ spec:
           port: 8081
         - protocol: TCP
           port: 9102
-# 2. Allow ingress traffic from infra-nanny-sandbox (canary)
-    - from:
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: infra-nanny-sandbox
-          podSelector:
-            matchLabels:
-              app: canary
-      ports:
-        - protocol: TCP
-          port: 8081
-        - protocol: TCP
-          port: 9102
-# 3. Allow ingress traffic from monitoring (cpmonitor)
+    # 2. Allow ingress traffic from monitoring (cpmonitor) - Seen 1 days between 2024-10-28 and 2024-10-28
     - from:
         - namespaceSelector:
             matchLabels:
@@ -50,24 +41,11 @@ spec:
           port: 8081
         - protocol: TCP
           port: 9102
-# 4. Allow ingress traffic from nodeprovisioner (nodeprovisionerasync)
+    # 3. Allow ingress traffic from CCP cluster-autoscaler - Seen 1 days between 2024-10-28 and 2024-10-28
     - from:
         - namespaceSelector:
             matchLabels:
-              kubernetes.io/metadata.name: nodeprovisioner
-          podSelector:
-            matchLabels:
-              control-plane: nodeprovisionerasync
-      ports:
-        - protocol: TCP
-          port: 8081
-        - protocol: TCP
-          port: 9102
-# 5. Allow ingress traffic from cluster-autoscaler (cluster-autoscaler)
-    - from:
-        - namespaceSelector:
-            matchLabels:
-              aks.azure.com/msi-enabled: 'true'
+              aks.azure.com/msi-enabled: "true"
           podSelector:
             matchLabels:
               app: cluster-autoscaler
@@ -76,11 +54,11 @@ spec:
           port: 8081
         - protocol: TCP
           port: 9102
-# 6. Allow ingress traffic from control-plane-remediator (control-plane-remediator)
+    # 4. Allow ingress traffic from CCP control-plane-remediator - Seen 1 days between 2024-10-28 and 2024-10-28
     - from:
         - namespaceSelector:
             matchLabels:
-              aks.azure.com/msi-enabled: 'true'
+              aks.azure.com/msi-enabled: "true"
           podSelector:
             matchLabels:
               app: control-plane-remediator
@@ -89,11 +67,11 @@ spec:
           port: 8081
         - protocol: TCP
           port: 9102
-# 7. Allow ingress traffic from csi-azuredisk-controller (csi-azuredisk-controller)
+    # 5. Allow ingress traffic from CCP csi-azuredisk-controller - Seen 1 days between 2024-10-28 and 2024-10-28
     - from:
         - namespaceSelector:
             matchLabels:
-              aks.azure.com/msi-enabled: 'true'
+              aks.azure.com/msi-enabled: "true"
           podSelector:
             matchLabels:
               app: csi-azuredisk-controller
@@ -102,24 +80,11 @@ spec:
           port: 8081
         - protocol: TCP
           port: 9102
-# 8. Allow ingress traffic from csi-azuredisk-controller-v2 (csi-azuredisk-controller-v2)
+    # 6. Allow ingress traffic from CCP csi-azurefile-controller - Seen 1 days between 2024-10-28 and 2024-10-28
     - from:
         - namespaceSelector:
             matchLabels:
-              aks.azure.com/msi-enabled: 'true'
-          podSelector:
-            matchLabels:
-              app: csi-azuredisk-controller-v2
-      ports:
-        - protocol: TCP
-          port: 8081
-        - protocol: TCP
-          port: 9102
-# 9. Allow ingress traffic from csi-azurefile-controller (csi-azurefile-controller)
-    - from:
-        - namespaceSelector:
-            matchLabels:
-              aks.azure.com/msi-enabled: 'true'
+              aks.azure.com/msi-enabled: "true"
           podSelector:
             matchLabels:
               app: csi-azurefile-controller
@@ -128,11 +93,11 @@ spec:
           port: 8081
         - protocol: TCP
           port: 9102
-# 10. Allow ingress traffic from csi-blob-controller (csi-blob-controller)
+    # 7. Allow ingress traffic from CCP csi-blob-controller - Seen 1 days between 2024-10-28 and 2024-10-28
     - from:
         - namespaceSelector:
             matchLabels:
-              aks.azure.com/msi-enabled: 'true'
+              aks.azure.com/msi-enabled: "true"
           podSelector:
             matchLabels:
               app: csi-blob-controller
@@ -141,50 +106,11 @@ spec:
           port: 8081
         - protocol: TCP
           port: 9102
-# 11. Allow ingress traffic from csi-snapshot-controller (csi-snapshot-controller)
+    # 8. Allow ingress traffic from CCP karpenter - Seen 1 days between 2024-10-28 and 2024-10-28
     - from:
         - namespaceSelector:
             matchLabels:
-              aks.azure.com/msi-enabled: 'true'
-          podSelector:
-            matchLabels:
-              app: csi-snapshot-controller
-      ports:
-        - protocol: TCP
-          port: 8081
-        - protocol: TCP
-          port: 9102
-# 12. Allow ingress traffic from etcd (etcd)
-    - from:
-        - namespaceSelector:
-            matchLabels:
-              aks.azure.com/msi-enabled: 'true'
-          podSelector:
-            matchLabels:
-              app: etcd
-      ports:
-        - protocol: TCP
-          port: 8081
-        - protocol: TCP
-          port: 9102
-# 13. Allow ingress traffic from etcd_backup_tool (etcd_backup_tool)
-    - from:
-        - namespaceSelector:
-            matchLabels:
-              aks.azure.com/msi-enabled: 'true'
-          podSelector:
-            matchLabels:
-              app: etcd_backup_tool
-      ports:
-        - protocol: TCP
-          port: 8081
-        - protocol: TCP
-          port: 9102
-# 14. Allow ingress traffic from karpenter (karpenter)
-    - from:
-        - namespaceSelector:
-            matchLabels:
-              aks.azure.com/msi-enabled: 'true'
+              aks.azure.com/msi-enabled: "true"
           podSelector:
             matchLabels:
               app: karpenter
@@ -193,24 +119,11 @@ spec:
           port: 8081
         - protocol: TCP
           port: 9102
-# 15. Allow ingress traffic from kube-state-metrics (kube-state-metrics)
+    # 9. Allow ingress traffic from CCP private-connect-balancer - Seen 1 days between 2024-10-28 and 2024-10-28
     - from:
         - namespaceSelector:
             matchLabels:
-              aks.azure.com/msi-enabled: 'true'
-          podSelector:
-            matchLabels:
-              app: kube-state-metrics
-      ports:
-        - protocol: TCP
-          port: 8081
-        - protocol: TCP
-          port: 9102
-# 16. Allow ingress traffic from private-connect-balancer (private-connect-balancer)
-    - from:
-        - namespaceSelector:
-            matchLabels:
-              aks.azure.com/msi-enabled: 'true'
+              aks.azure.com/msi-enabled: "true"
           podSelector:
             matchLabels:
               app: private-connect-balancer
@@ -219,89 +132,11 @@ spec:
           port: 8081
         - protocol: TCP
           port: 9102
-# 17. Allow ingress traffic from prometheus (prometheus)
+    # 10. Allow ingress traffic from CCP fleet-mcs-controller-manager - Seen 1 days between 2024-10-28 and 2024-10-28
     - from:
         - namespaceSelector:
             matchLabels:
-              aks.azure.com/msi-enabled: 'true'
-          podSelector:
-            matchLabels:
-              app: prometheus
-      ports:
-        - protocol: TCP
-          port: 8081
-        - protocol: TCP
-          port: 9102
-# 18. Allow ingress traffic from telemetryexporter (telemetryexporter)
-    - from:
-        - namespaceSelector:
-            matchLabels:
-              aks.azure.com/msi-enabled: 'true'
-          podSelector:
-            matchLabels:
-              app: telemetryexporter
-      ports:
-        - protocol: TCP
-          port: 8081
-        - protocol: TCP
-          port: 9102
-# 19. Allow ingress traffic from vmagent (vmagent)
-    - from:
-        - namespaceSelector:
-            matchLabels:
-              aks.azure.com/msi-enabled: 'true'
-          podSelector:
-            matchLabels:
-              app: vmagent
-      ports:
-        - protocol: TCP
-          port: 8081
-        - protocol: TCP
-          port: 9102
-# 20. Allow ingress traffic from vmagent-autoscaler (vmagent-autoscaler)
-    - from:
-        - namespaceSelector:
-            matchLabels:
-              aks.azure.com/msi-enabled: 'true'
-          podSelector:
-            matchLabels:
-              app: vmagent-autoscaler
-      ports:
-        - protocol: TCP
-          port: 8081
-        - protocol: TCP
-          port: 9102
-# 21. Allow ingress traffic from fleet-hub-agent (fleet-hub-agent)
-    - from:
-        - namespaceSelector:
-            matchLabels:
-              aks.azure.com/msi-enabled: 'true'
-          podSelector:
-            matchLabels:
-              app.kubernetes.io/name: fleet-hub-agent
-      ports:
-        - protocol: TCP
-          port: 8081
-        - protocol: TCP
-          port: 9102
-# 22. Allow ingress traffic from fleet-hub-net-controller-manager (fleet-hub-net-controller-manager)
-    - from:
-        - namespaceSelector:
-            matchLabels:
-              aks.azure.com/msi-enabled: 'true'
-          podSelector:
-            matchLabels:
-              app.kubernetes.io/name: fleet-hub-net-controller-manager
-      ports:
-        - protocol: TCP
-          port: 8081
-        - protocol: TCP
-          port: 9102
-# 23. Allow ingress traffic from fleet-mcs-controller-manager (fleet-mcs-controller-manager)
-    - from:
-        - namespaceSelector:
-            matchLabels:
-              aks.azure.com/msi-enabled: 'true'
+              aks.azure.com/msi-enabled: "true"
           podSelector:
             matchLabels:
               app.kubernetes.io/name: fleet-mcs-controller-manager
@@ -310,11 +145,11 @@ spec:
           port: 8081
         - protocol: TCP
           port: 9102
-# 24. Allow ingress traffic from fleet-member-agent (fleet-member-agent)
+    # 11. Allow ingress traffic from CCP fleet-member-agent - Seen 1 days between 2024-10-28 and 2024-10-28
     - from:
         - namespaceSelector:
             matchLabels:
-              aks.azure.com/msi-enabled: 'true'
+              aks.azure.com/msi-enabled: "true"
           podSelector:
             matchLabels:
               app.kubernetes.io/name: fleet-member-agent
@@ -323,11 +158,11 @@ spec:
           port: 8081
         - protocol: TCP
           port: 9102
-# 25. Allow ingress traffic from fleet-member-net-controller-manager (fleet-member-net-controller-manager)
+    # 12. Allow ingress traffic from CCP fleet-member-net-controller-manager - Seen 1 days between 2024-10-28 and 2024-10-28
     - from:
         - namespaceSelector:
             matchLabels:
-              aks.azure.com/msi-enabled: 'true'
+              aks.azure.com/msi-enabled: "true"
           podSelector:
             matchLabels:
               app.kubernetes.io/name: fleet-member-net-controller-manager
@@ -336,37 +171,11 @@ spec:
           port: 8081
         - protocol: TCP
           port: 9102
-# 26. Allow ingress traffic from kubelet-serving-csr-approver (kubelet-serving-csr-approver)
+    # 13. Allow ingress traffic from CCP addontokenreconciler - Seen 1 days between 2024-10-28 and 2024-10-28
     - from:
         - namespaceSelector:
             matchLabels:
-              aks.azure.com/msi-enabled: 'true'
-          podSelector:
-            matchLabels:
-              app.kubernetes.io/name: kubelet-serving-csr-approver
-      ports:
-        - protocol: TCP
-          port: 8081
-        - protocol: TCP
-          port: 9102
-# 27. Allow ingress traffic from eventlogger (eventlogger)
-    - from:
-        - namespaceSelector:
-            matchLabels:
-              aks.azure.com/msi-enabled: 'true'
-          podSelector:
-            matchLabels:
-              control-plane: eventlogger
-      ports:
-        - protocol: TCP
-          port: 8081
-        - protocol: TCP
-          port: 9102
-# 28. Allow ingress traffic from addontokenreconciler (addontokenreconciler)
-    - from:
-        - namespaceSelector:
-            matchLabels:
-              aks.azure.com/msi-enabled: 'true'
+              aks.azure.com/msi-enabled: "true"
           podSelector:
             matchLabels:
               k8s-app: addontokenreconciler
@@ -375,24 +184,11 @@ spec:
           port: 8081
         - protocol: TCP
           port: 9102
-# 29. Allow ingress traffic from admissionsenforcer (admissionsenforcer)
+    # 14. Allow ingress traffic from CCP cloud-controller-manager - Seen 1 days between 2024-10-28 and 2024-10-28
     - from:
         - namespaceSelector:
             matchLabels:
-              aks.azure.com/msi-enabled: 'true'
-          podSelector:
-            matchLabels:
-              k8s-app: admissionsenforcer
-      ports:
-        - protocol: TCP
-          port: 8081
-        - protocol: TCP
-          port: 9102
-# 30. Allow ingress traffic from cloud-controller-manager (cloud-controller-manager)
-    - from:
-        - namespaceSelector:
-            matchLabels:
-              aks.azure.com/msi-enabled: 'true'
+              aks.azure.com/msi-enabled: "true"
           podSelector:
             matchLabels:
               k8s-app: cloud-controller-manager
@@ -401,76 +197,11 @@ spec:
           port: 8081
         - protocol: TCP
           port: 9102
-# 31. Allow ingress traffic from customer-net-probe (customer-net-probe)
+    # 15. Allow ingress traffic from CCP kube-apiserver - Seen 1 days between 2024-10-28 and 2024-10-28
     - from:
         - namespaceSelector:
             matchLabels:
-              aks.azure.com/msi-enabled: 'true'
-          podSelector:
-            matchLabels:
-              k8s-app: customer-net-probe
-      ports:
-        - protocol: TCP
-          port: 8081
-        - protocol: TCP
-          port: 9102
-# 32. Allow ingress traffic from guard (guard)
-    - from:
-        - namespaceSelector:
-            matchLabels:
-              aks.azure.com/msi-enabled: 'true'
-          podSelector:
-            matchLabels:
-              k8s-app: guard
-      ports:
-        - protocol: TCP
-          port: 8081
-        - protocol: TCP
-          port: 9102
-# 33. Allow ingress traffic from konnectivity-svr (konnectivity-svr)
-    - from:
-        - namespaceSelector:
-            matchLabels:
-              aks.azure.com/msi-enabled: 'true'
-          podSelector:
-            matchLabels:
-              k8s-app: konnectivity-svr
-      ports:
-        - protocol: TCP
-          port: 8081
-        - protocol: TCP
-          port: 9102
-# 34. Allow ingress traffic from kube-addon-manager (kube-addon-manager)
-    - from:
-        - namespaceSelector:
-            matchLabels:
-              aks.azure.com/msi-enabled: 'true'
-          podSelector:
-            matchLabels:
-              k8s-app: kube-addon-manager
-      ports:
-        - protocol: TCP
-          port: 8081
-        - protocol: TCP
-          port: 9102
-# 35. Allow ingress traffic from kube-api-proxy (kube-api-proxy)
-    - from:
-        - namespaceSelector:
-            matchLabels:
-              aks.azure.com/msi-enabled: 'true'
-          podSelector:
-            matchLabels:
-              k8s-app: kube-api-proxy
-      ports:
-        - protocol: TCP
-          port: 8081
-        - protocol: TCP
-          port: 9102
-# 36. Allow ingress traffic from kube-apiserver (kube-apiserver)
-    - from:
-        - namespaceSelector:
-            matchLabels:
-              aks.azure.com/msi-enabled: 'true'
+              aks.azure.com/msi-enabled: "true"
           podSelector:
             matchLabels:
               k8s-app: kube-apiserver
@@ -479,11 +210,11 @@ spec:
           port: 8081
         - protocol: TCP
           port: 9102
-# 37. Allow ingress traffic from kube-controller-manager (kube-controller-manager)
+    # 16. Allow ingress traffic from CCP kube-controller-manager - Seen 1 days between 2024-10-28 and 2024-10-28
     - from:
         - namespaceSelector:
             matchLabels:
-              aks.azure.com/msi-enabled: 'true'
+              aks.azure.com/msi-enabled: "true"
           podSelector:
             matchLabels:
               k8s-app: kube-controller-manager
@@ -492,63 +223,11 @@ spec:
           port: 8081
         - protocol: TCP
           port: 9102
-# 38. Allow ingress traffic from kube-scheduler (kube-scheduler)
+    # 17. Allow ingress traffic from CCP ama-metrics-ccp - Seen 1 days between 2024-10-28 and 2024-10-28
     - from:
         - namespaceSelector:
             matchLabels:
-              aks.azure.com/msi-enabled: 'true'
-          podSelector:
-            matchLabels:
-              k8s-app: kube-scheduler
-      ports:
-        - protocol: TCP
-          port: 8081
-        - protocol: TCP
-          port: 9102
-# 39. Allow ingress traffic from tattler (tattler)
-    - from:
-        - namespaceSelector:
-            matchLabels:
-              aks.azure.com/msi-enabled: 'true'
-          podSelector:
-            matchLabels:
-              k8s-app: tattler
-      ports:
-        - protocol: TCP
-          port: 8081
-        - protocol: TCP
-          port: 9102
-# 40. Allow ingress traffic from controller-manager (controller-manager)
-    - from:
-        - namespaceSelector:
-            matchLabels:
-              aks.azure.com/msi-enabled: 'true'
-          podSelector:
-            matchLabels:
-              kube-egress-gateway-control-plane: controller-manager
-      ports:
-        - protocol: TCP
-          port: 8081
-        - protocol: TCP
-          port: 9102
-# 41. Allow ingress traffic from etcd-operator (etcd-operator)
-    - from:
-        - namespaceSelector:
-            matchLabels:
-              aks.azure.com/msi-enabled: 'true'
-          podSelector:
-            matchLabels:
-              overlay-app: etcd-operator
-      ports:
-        - protocol: TCP
-          port: 8081
-        - protocol: TCP
-          port: 9102
-# 42. Allow ingress traffic from ama-metrics-ccp (ama-metrics-ccp)
-    - from:
-        - namespaceSelector:
-            matchLabels:
-              aks.azure.com/msi-enabled: 'true'
+              aks.azure.com/msi-enabled: "true"
           podSelector:
             matchLabels:
               rsName: ama-metrics-ccp

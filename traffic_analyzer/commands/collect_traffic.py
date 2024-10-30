@@ -4,130 +4,63 @@ from azure.kusto.data import KustoClient, KustoConnectionStringBuilder
 from typing import List, Dict, Any, Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from tqdm import tqdm
-from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
+from tenacity import (
+    retry, 
+    stop_after_attempt, 
+    wait_exponential, 
+    retry_if_exception_type,
+    RetryCallState,
+    before_sleep_log
+)
 import traceback
 import psycopg2
 from psycopg2.extras import Json
 import json
 from dataclasses import dataclass
 from datetime import datetime, time, timedelta
+from ..models.chunk import DayChunk, ChunkPeriod
+from ..storage.postgres_manager import PostgresManager
+import logging
+import sys
 
-@dataclass
-class DayChunk:
-    date: datetime.date
-    start_time: datetime
-    end_time: datetime
+# Set up logging
+logging.basicConfig(stream=sys.stderr, level=logging.DEBUG)
+logger = logging.getLogger(__name__)
 
-
-@dataclass
-class ChunkPeriod:
-    start_time: datetime
-    end_time: datetime
+def log_retry_attempt(retry_state: RetryCallState):
+    """Custom callback for logging retry attempts"""
+    # Get chunk info from the args (database, query, chunk)
+    chunk = retry_state.args[2] if len(retry_state.args) > 2 else None
     
-    def __str__(self) -> str:
-        return f"{self.start_time.isoformat()}_{self.end_time.isoformat()}"
+    if chunk:
+        try:
+            # Try to handle both datetime and string formats
+            start_time = chunk[0].isoformat() if hasattr(chunk[0], 'isoformat') else chunk[0]
+            end_time = chunk[1].isoformat() if hasattr(chunk[1], 'isoformat') else chunk[1]
+            chunk_info = f"chunk {start_time} to {end_time}"
+        except (AttributeError, IndexError):
+            # Fallback if chunk format is unexpected
+            chunk_info = f"chunk {chunk}"
+    else:
+        chunk_info = "unknown chunk"
 
-class PostgresManager:
-    def __init__(self, dbname="traffic_analyzer", user="postgres", host="localhost", port="5432"):
-        password = click.prompt("Enter password for PostgreSQL user", hide_input=True)
-        self.conn_params = {
-            "dbname": dbname,
-            "user": user,
-            "password": password,
-            "host": host,
-            "port": port
-        }
-        self.init_database()
+    if retry_state.attempt_number == 1:
+        logger.info(f"First attempt for {chunk_info}")
+    else:
+        error_info = ""
+        if retry_state.outcome and retry_state.outcome.failed:
+            error = retry_state.outcome.exception()
+            error_info = f" (Error: {str(error)})"
 
-    def init_database(self):
-        # Connect to default database to create our database if it doesn't exist
-        conn = psycopg2.connect(**{**self.conn_params, "dbname": "postgres"})
-        conn.autocommit = True
-        cur = conn.cursor()
-
-        # Create database if it doesn't exist
-        cur.execute("SELECT 1 FROM pg_catalog.pg_database WHERE datname = %s", (self.conn_params["dbname"],))
-        if not cur.fetchone():
-            cur.execute(f"CREATE DATABASE {self.conn_params['dbname']}")
-
-        cur.close()
-        conn.close()
-
-        # Connect to our database and create table with chunk period as part of primary key
-        with self.get_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute("""
-                    CREATE TABLE IF NOT EXISTS component_dependency_chunks (
-                        dateonly DATE NOT NULL,
-                        chunk_start TIMESTAMP WITH TIME ZONE NOT NULL,
-                        chunk_end TIMESTAMP WITH TIME ZONE NOT NULL,
-                        component VARCHAR(255) NOT NULL,
-                        results JSONB NOT NULL,
-                        execution_info JSONB NOT NULL,
-                        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-                        updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-                        PRIMARY KEY (dateonly, chunk_start, chunk_end, component)
-                    )
-                """)
-                
-                # Add index for efficient date range queries
-                cur.execute("""
-                    CREATE INDEX IF NOT EXISTS idx_component_dependency_chunks_date_component 
-                    ON component_dependency_chunks (dateonly, component)
-                """)
-                conn.commit()
-
-    def get_connection(self):
-        return psycopg2.connect(**self.conn_params)
-
-    def check_chunk_exists(self, date: datetime.date, chunk_period: ChunkPeriod, component: str) -> bool:
-        """Check if data exists for a specific chunk period and component."""
-        with self.get_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute("""
-                    SELECT 1 FROM component_dependency_chunks 
-                    WHERE dateonly = %s 
-                    AND chunk_start = %s 
-                    AND chunk_end = %s 
-                    AND component = %s
-                """, (date, chunk_period.start_time, chunk_period.end_time, component))
-                return cur.fetchone() is not None
-
-    def store_chunk_results(self, date: datetime.date, chunk_period: ChunkPeriod, 
-                      component: str, results: Dict, execution_info: Dict):
-        """Store results for a specific chunk period, replacing any existing data."""
-        with self.get_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute("""
-                    INSERT INTO component_dependency_chunks 
-                    (dateonly, chunk_start, chunk_end, component, results, execution_info)
-                    VALUES (%s, %s, %s, %s, %s, %s)
-                    ON CONFLICT (dateonly, chunk_start, chunk_end, component) 
-                    DO UPDATE SET
-                        results = EXCLUDED.results,
-                        execution_info = EXCLUDED.execution_info,
-                        updated_at = CURRENT_TIMESTAMP
-                """, (date, chunk_period.start_time, chunk_period.end_time, 
-                    component, Json(results), Json(execution_info)))
-                conn.commit()
-
-    
-    def get_results_for_date_range(self, start_date: datetime.date, 
-                                 end_date: datetime.date, component: str) -> List[Dict]:
-        """Retrieve results for a date range and component."""
-        with self.get_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute("""
-                    SELECT results FROM component_dependency_chunks
-                    WHERE dateonly BETWEEN %s AND %s 
-                    AND component = %s
-                    ORDER BY dateonly, chunk_start
-                """, (start_date, end_date, component))
-                rows = cur.fetchall()
-                results = []
-                for row in rows:
-                    results.extend(row[0])  # 'results' column contains the data
-                return results
+        logger.warning(
+            "Retrying %s: attempt %d ended with: %s%s for %s",
+            retry_state.fn.__name__,
+            retry_state.attempt_number,
+            retry_state.outcome,
+            error_info,
+            chunk_info
+        )
+    return True
 
 class TrafficCollector:
     def __init__(self, cluster_url="https://akshuba.centralus.kusto.windows.net",
@@ -282,11 +215,37 @@ class TrafficCollector:
         
         return query
 
-    @retry(stop=stop_after_attempt(5), wait=wait_exponential(multiplier=1, min=1, max=10),
-           retry=retry_if_exception_type(Exception))
-    def execute_query_with_retries(self, database: str, query: str):
+    @retry(
+        stop=stop_after_attempt(5),
+        wait=wait_exponential(multiplier=1, min=1, max=10),
+        retry=retry_if_exception_type(Exception),
+        before_sleep=log_retry_attempt,
+        reraise=True
+    )
+    def execute_query_with_retries(self, database: str, query: str, chunk):
         """Execute a Kusto query with retries."""
-        return self.client.execute(database, query)
+        try:
+            # Get formatted times for logging
+            start_time = chunk[0].isoformat() if hasattr(chunk[0], 'isoformat') else chunk[0]
+            end_time = chunk[1].isoformat() if hasattr(chunk[1], 'isoformat') else chunk[1]
+            
+            logger.info(
+                f"Executing query for chunk {start_time} to {end_time}"
+            )
+            
+            result = self.client.execute(database, query)
+            
+            logger.info(
+                f"Query executed successfully for chunk {start_time} to {end_time}"
+            )
+            return result
+                
+        except Exception as e:
+            logger.error(
+                f"Query failed for chunk {start_time} to {end_time}: {str(e)}",
+                exc_info=True  # This will include the full traceback in the log
+            )
+            raise  # Re-raise the exception to trigger retry
 
     def process_chunk(self, component: str, chunk: tuple[datetime, datetime]) -> Dict[str, Any]:
         """Process a single chunk with enhanced error tracking"""
@@ -299,7 +258,8 @@ class TrafficCollector:
 
         try:
             query = self.build_query(component, start_time, end_time)
-            response = self.execute_query_with_retries("AKSprod", query)
+            # Pass the chunk parameter here
+            response = self.execute_query_with_retries("AKSprod", query, chunk)  # Added chunk here
             results = [row.to_dict() for row in response.primary_results[0]]
 
             return {
@@ -344,7 +304,7 @@ class TrafficCollector:
         ]
         return merged_results
 
-    def process_day(self, day_chunk: DayChunk, component: str) -> Optional[Dict[str, Any]]:
+    def process_day(self, day_chunk: DayChunk, component: str, force_replace: bool = False) -> Optional[Dict[str, Any]]:
         """Process all chunks for a single day."""
         time_chunks = self.get_time_chunks(day_chunk)
 
@@ -377,11 +337,17 @@ class TrafficCollector:
         click.echo(f"\nProcessing {component} for {day_chunk.date.isoformat()}...")
 
         with ThreadPoolExecutor(max_workers=self.MAX_WORKERS) as executor:
-            future_to_chunk = {
-                executor.submit(self.process_chunk, component, chunk): chunk
-                for chunk in time_chunks
-            }
+            # Only submit chunks that don't exist in DB or if force_replace is True
+            future_to_chunk = {}
+            for chunk in time_chunks:
+                chunk_period = ChunkPeriod(start_time=chunk[0], end_time=chunk[1])
+                if force_replace or not self.pg_manager.check_chunk_exists(day_chunk.date, chunk_period, component):
+                    future_to_chunk[executor.submit(self.process_chunk, component, chunk)] = chunk
+                else:
+                    logger.info(f"Skipping existing chunk {chunk[0].isoformat()} to {chunk[1].isoformat()}")
+                    execution_info['successful_chunks'] += 1  # Count as successful since it exists
 
+            # Process submitted chunks
             for future in as_completed(future_to_chunk):
                 chunk = future_to_chunk[future]
                 try:
@@ -389,7 +355,7 @@ class TrafficCollector:
                     if result['success']:
                         daily_results.extend(result['data'])
                         execution_info['successful_chunks'] += 1
-                        # Store each successful chunk’s results individually
+                        # Store each successful chunk's results individually
                         self.pg_manager.store_chunk_results(
                             date=day_chunk.date,
                             chunk_period=ChunkPeriod(start_time=chunk[0], end_time=chunk[1]),
@@ -397,13 +363,11 @@ class TrafficCollector:
                             results=result['data'],
                             execution_info={'success': True, 'chunk_info': result['chunk_info']}
                         )
-                        click.echo(f"Chunk {chunk} processed successfully.")
-                        return None
+                        logger.info(f"Chunk {chunk[0].isoformat()} to {chunk[1].isoformat()} processed successfully.")
                     else:
-                        click.echo(f"Chunk {chunk} failed with error: {result['error']}")
+                        logger.error(f"Chunk {chunk[0].isoformat()} to {chunk[1].isoformat()} failed with error: {result['error']}")
                         execution_info['failed_chunks'] += 1
                         execution_info['errors'].append(result['error'])
-                        # If any chunk fails, return None to skip the entire day
                         return None
                 except Exception as e:
                     execution_info['failed_chunks'] += 1
@@ -416,13 +380,18 @@ class TrafficCollector:
                             'end_time': chunk[1].isoformat()
                         }
                     })
-                    # If any chunk fails, return None to skip the entire day
                     return None
 
         if daily_results:
             merged_results = self.merge_results(daily_results)
             return {
                 'results': merged_results,
+                'execution_info': execution_info
+            }
+        elif execution_info['successful_chunks'] == len(time_chunks):
+            # All chunks were skipped because they exist
+            return {
+                'results': [],
                 'execution_info': execution_info
             }
         return None
@@ -434,13 +403,8 @@ class TrafficCollector:
         for day_chunk in tqdm(day_chunks, desc="Processing days"):
             click.echo(f"\nProcessing date: {day_chunk.date}")
 
-            # Skip if data exists and force_replace is False
-            if not force_replace and self.pg_manager.check_date_exists(day_chunk.date, component):
-                click.echo(f"Data already exists for {day_chunk.date}, skipping...")
-                continue
-
             # Process the day
-            day_results = self.process_day(day_chunk, component)
+            day_results = self.process_day(day_chunk, component, force_replace)
             
             # Print daily summary
             exec_info = day_results['execution_info']

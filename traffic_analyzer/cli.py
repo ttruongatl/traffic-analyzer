@@ -14,6 +14,7 @@ from psycopg2.extras import Json
 from typing import Dict, Any, List
 import traceback
 from dataclasses import dataclass
+from .commands.network_policy_generator import NetworkPolicyGenerator
 
 @click.group()
 @click.version_option()
@@ -47,150 +48,49 @@ def collect(component: str, days: int, chunk_minutes: int, max_workers: int, for
         click.echo(f"\nError during collection: {str(e)}", err=True)
         raise click.Abort()
 
-@cli.command()
+@cli.command(name="generate-np")
 @click.option('--component', '-c', required=True, help='Component to generate NetworkPolicy for')
 @click.option('--days', default=30, help='Number of days to aggregate data for')
 @click.option('--namespace', '-n', required=True, help='Namespace for the NetworkPolicy')
 @click.option('--output', '-o', default='networkpolicy.yaml', help='Output file for the NetworkPolicy YAML')
-def generate_np(component: str, days: int, namespace: str, output: str):
-    """Generate NetworkPolicy YAML from collected data over a range of days."""
-    # Calculate date range
-    end_date = datetime.utcnow().date() - timedelta(days=1)  # Exclude today
+@click.option('--min-days-seen', default=1, help='Minimum number of days a dependency must be seen to be included')
+def generate_np(component: str, days: int, namespace: str, output: str, min_days_seen: int):
+    """Generate NetworkPolicy YAML from collected data with enhanced filtering and metadata."""
+    end_date = datetime.utcnow().date() - timedelta(days=1)
     start_date = end_date - timedelta(days=days - 1)
     
-    pg_manager = PostgresManager()
-    results = pg_manager.get_results_for_date_range(start_date, end_date, component)
-    if not results:
-        click.echo(f"No data found for component '{component}' in the last {days} days")
-        return
+    generator = NetworkPolicyGenerator()
     
-    # Separate ingress rules into non-CCP and CCP groups
-    ingress_rule_entries = []
-    
-    for idx, record in enumerate(results, start=1):
-        is_ccp = record.get('isCCP', 'False')
-        label_key = record['LabelKey']
-        label_value = record['LabelValue']
-        pod_namespace = record.get('PodNamespace', 'default')
+    try:
+        # Fetch and filter data
+        records = generator.fetch_dependency_data(component, start_date, end_date)
+        filtered_records = [r for r in records if r['days_seen'] >= min_days_seen]
         
-        if is_ccp == 'True':
-            # CCP component
-            namespace_selector = {'matchLabels': {'aks.azure.com/msi-enabled': 'true'}}
-        else:
-            # Non-CCP component
-            namespace_selector = {'matchLabels': {'kubernetes.io/metadata.name': pod_namespace}}
+        if not filtered_records:
+            click.echo(f"No dependencies found meeting the minimum days seen criteria ({min_days_seen} days)")
+            return
+
+        # Generate and save NetworkPolicy
+        network_policy = generator.generate_network_policy(filtered_records, namespace)
         
-        pod_selector = {'matchLabels': {label_key: label_value}}
+        yaml = ruamel.yaml.YAML()
+        yaml.preserve_quotes = True
+        yaml.indent(mapping=2, sequence=4, offset=2)
         
-        ingress_rule_entry = {
-            'is_ccp': is_ccp,
-            'namespace': pod_namespace,
-            'label_key': label_key,
-            'label_value': label_value,
-            'namespace_selector': namespace_selector,
-            'pod_selector': pod_selector,
-            'index': idx  # Row number index
-        }
+        with open(output, 'w') as f:
+            yaml.dump(network_policy, f)
         
-        ingress_rule_entries.append(ingress_rule_entry)
-    
-    # Remove duplicates
-    ingress_rule_entries_unique = {(
-        entry['is_ccp'],
-        tuple(entry['namespace_selector']['matchLabels'].items()),
-        tuple(entry['pod_selector']['matchLabels'].items())
-    ): entry for entry in ingress_rule_entries}.values()
-    
-    # Separate and sort the entries
-    non_ccp_entries = [entry for entry in ingress_rule_entries_unique if entry['is_ccp'] == 'False']
-    ccp_entries = [entry for entry in ingress_rule_entries_unique if entry['is_ccp'] == 'True']
-    
-    # Sort non-CCP entries by namespace name alphabetically
-    non_ccp_entries.sort(key=lambda x: x['namespace'])
-    
-    # Sort CCP entries by label key
-    ccp_entries.sort(key=lambda x: x['label_key'])
-    
-    # Initialize ruamel.yaml YAML object
-    yaml = ruamel.yaml.YAML()
-    yaml.preserve_quotes = True
-    yaml.indent(mapping=2, sequence=4, offset=2)
-    
-    # Prepare the NetworkPolicy data structure
-    network_policy = CommentedMap({
-        'apiVersion': 'networking.k8s.io/v1',
-        'kind': 'NetworkPolicy',
-        'metadata': CommentedMap({
-            'name': 'allow-msi-connector-ingress',
-            'namespace': namespace
-        }),
-        'spec': CommentedMap({
-            'podSelector': CommentedMap({
-                'matchLabels': CommentedMap({
-                    'app': 'msi-connector'
-                })
-            }),
-            'policyTypes': ['Ingress'],
-            'ingress': CommentedSeq()
-        })
-    })
-    
-    ingress_rules = network_policy['spec']['ingress']
-    idx_counter = 1  # To keep track of the row numbers
-    
-    # Add non-CCP ingress rules
-    if non_ccp_entries:
-        # Add dividing comment before the first non-CCP ingress rule
-        ingress_rules.yaml_set_start_comment('# Non-CCP Ingress Rules', indent=0)
+        # Print summary
+        click.echo(f"\nNetworkPolicy generated successfully:")
+        click.echo(f"- Total dependencies found: {len(records)}")
+        click.echo(f"- Dependencies meeting {min_days_seen}-day minimum: {len(filtered_records)}")
+        click.echo(f"- Non-CCP dependencies: {len([r for r in filtered_records if not r['is_ccp']])}")
+        click.echo(f"- CCP dependencies: {len([r for r in filtered_records if r['is_ccp']])}")
+        click.echo(f"- Output written to: {output}")
         
-        for entry in non_ccp_entries:
-            comment = f"{idx_counter}. Allow ingress traffic from {entry['namespace']} ({entry['label_value']})"
-            ingress_rule = CommentedMap({
-                'from': [
-                    {
-                        'namespaceSelector': CommentedMap(entry['namespace_selector']),
-                        'podSelector': CommentedMap(entry['pod_selector'])
-                    }
-                ],
-                'ports': [
-                    CommentedMap({'protocol': 'TCP', 'port': 8081}),
-                    CommentedMap({'protocol': 'TCP', 'port': 9102})
-                ]
-            })
-            ingress_rule.yaml_set_start_comment(comment, indent=0)
-            ingress_rules.append(ingress_rule)
-            idx_counter += 1
-    
-    # Add CCP ingress rules
-    if ccp_entries:
-        # Get the index where CCP entries start
-        ccp_start_index = len(ingress_rules)
-        # Add dividing comment before the first CCP ingress rule
-        ingress_rules.yaml_set_comment_before_after_key(ccp_start_index, before='\n# CCP Ingress Rules', indent=0)
-        
-        for entry in ccp_entries:
-            comment = f"{idx_counter}. Allow ingress traffic from {entry['label_value']} ({entry['label_value']})"
-            ingress_rule = CommentedMap({
-                'from': [
-                    {
-                        'namespaceSelector': CommentedMap(entry['namespace_selector']),
-                        'podSelector': CommentedMap(entry['pod_selector'])
-                    }
-                ],
-                'ports': [
-                    CommentedMap({'protocol': 'TCP', 'port': 8081}),
-                    CommentedMap({'protocol': 'TCP', 'port': 9102})
-                ]
-            })
-            ingress_rule.yaml_set_start_comment(comment, indent=0)
-            ingress_rules.append(ingress_rule)
-            idx_counter += 1
-    
-    # Write to YAML file
-    with open(output, 'w') as f:
-        yaml.dump(network_policy, f)
-    
-    click.echo(f"NetworkPolicy YAML has been written to {output}")
+    except Exception as e:
+        click.echo(f"Error generating NetworkPolicy: {str(e)}")
+        raise
 
 @cli.command(name='test-kusto')
 @click.option('--component', '-c', required=True, help='Component to test query for')
