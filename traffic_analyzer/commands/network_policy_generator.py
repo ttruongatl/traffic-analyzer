@@ -126,8 +126,7 @@ class NetworkPolicyGenerator:
                     ingress_rules, 
                     record, 
                     idx_counter,
-                    f"Allow ingress traffic from {record['namespace']} ({record['label_value']}) - "
-                    f"Seen {record['days_seen']} days between {record['first_seen']} and {record['last_seen']}"
+                    f"Allow ingress traffic from {record['namespace']} ({record['label_value']})"
                 )
                 idx_counter += 1
 
